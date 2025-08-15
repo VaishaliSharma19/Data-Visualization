@@ -139,11 +139,60 @@ def parse_brand_and_title_from_json(json_items: List[Dict[str, Any]]) -> Tuple[O
 	return brand, title
 
 
+async def try_set_90_per_page(page) -> None:
+	"""Attempt to change the category listing to 90 items per page.
+	Tries multiple selector strategies to adapt to different DOM structures.
+	"""
+	try:
+		# Sometimes there is a dropdown/select for results per page
+		# Try selecting via any select element whose options contain 90
+		select_count = await page.locator("select").count()
+		for i in range(select_count):
+			selector = f"select >> nth={i}"
+			try:
+				await page.select_option(selector, label="90")
+				await page.wait_for_timeout(800)
+				return
+			except Exception:
+				try:
+					await page.select_option(selector, value="90")
+					await page.wait_for_timeout(800)
+					return
+				except Exception:
+					pass
+
+		# Try common clickable elements that might represent the 90-per-page control
+		candidates = [
+			"button:has-text('90 per page')",
+			"button:has-text('View 90')",
+			"button:has-text('90')",
+			"a:has-text('90 per page')",
+			"a:has-text('View 90')",
+			"a:has-text('90')",
+			"[role='menuitem']:has-text('90')",
+			"li:has-text('90')",
+		]
+		for sel in candidates:
+			loc = page.locator(sel).first
+			if await loc.count() > 0:
+				try:
+					await loc.click(timeout=2000)
+					await page.wait_for_timeout(1000)
+					return
+				except Exception:
+					pass
+	except Exception:
+		return
+
+
 async def get_product_urls_from_category(page) -> List[str]:
 	await page.route("**/*", lambda route: route.continue_())
 	await page.goto(CATEGORY_URL, wait_until="load")
 	# Give extra time for client-side loading
 	await page.wait_for_timeout(1500)
+	# Try to switch to 90 items per page
+	await try_set_90_per_page(page)
+	await page.wait_for_timeout(1000)
 	loaded_urls: List[str] = []
 	for _ in range(40):
 		await page.wait_for_timeout(250)
