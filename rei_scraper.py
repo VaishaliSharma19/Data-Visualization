@@ -509,6 +509,7 @@ async def main():
         browser = await pw.chromium.launch(headless=HEADLESS, args=[
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
+            "--ignore-certificate-errors",
         ])
         context_kwargs: Dict[str, Any] = {
             "user_agent": UA,
@@ -555,7 +556,7 @@ async def main():
         elif PLAYWRIGHT_PROXY:
             context_kwargs["proxy"] = {"server": PLAYWRIGHT_PROXY}
 
-        context = await browser.new_context(**context_kwargs)
+        context = await browser.new_context(ignore_https_errors=True, **context_kwargs)
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         # In API mode only, route REI requests via provider URL wrapper
