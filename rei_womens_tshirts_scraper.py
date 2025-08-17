@@ -27,6 +27,7 @@ STEP_SLEEP = (2, 5)   # ms range jitter between small actions
 NAV_SLEEP  = (600, 1200)  # ms range jitter between navigations (increased for realism)
 CONCURRENCY = int(os.getenv("CONCURRENCY", "2"))
 MAX_PRODUCTS = int(os.getenv("MAX_PRODUCTS", "90"))
+LOAD_TIMEOUT_MS_PROVIDER = int(os.getenv("LOAD_TIMEOUT_MS_PROVIDER", "120000"))
 
 # Optional proxy: set PROXY_SERVER env var like "http://user:pass@host:port"
 PROXY = os.getenv("PROXY_SERVER")  # None or "http://...."
@@ -474,6 +475,10 @@ async def goto_with_retries(
     use_provider: bool,
     referer: Optional[str] = None,
     max_attempts: int = 3,
+    timeout_ms_direct: Optional[int] = None,
+    timeout_ms_provider: Optional[int] = None,
+    wait_until_direct: str = "domcontentloaded",
+    wait_until_provider: str = "commit",
 ) -> None:
     """Navigate with retries. If provider is enabled and configured, rotate session on retry."""
     for attempt in range(1, max_attempts + 1):
@@ -481,12 +486,16 @@ async def goto_with_retries(
             if use_provider and _provider_is_configured():
                 session = None if attempt == 1 else random.randint(10_000, 9_999_999)
                 target = build_provider_url(url, session=session)
+                wait_until = wait_until_provider
+                timeout = timeout_ms_provider or LOAD_TIMEOUT_MS_PROVIDER
             else:
                 target = url
+                wait_until = wait_until_direct
+                timeout = timeout_ms_direct or LOAD_TIMEOUT_MS
             resp = await page.goto(
                 target,
-                wait_until="domcontentloaded",
-                timeout=LOAD_TIMEOUT_MS,
+                wait_until=wait_until,
+                timeout=timeout,
                 referer=referer,
             )
             await asyncio.sleep(_rand_sleep(*NAV_SLEEP))
@@ -504,30 +513,16 @@ async def goto_with_retries(
 
 
 async def scrape_pdp(page: Page, url: str) -> List[Dict[str, Any]]:
-    target_url = build_provider_url(url) if USE_PROVIDER_FOR_PDP else url
-    response: Optional[Response] = None
-    try:
-        response = await page.goto(target_url, wait_until="domcontentloaded", timeout=LOAD_TIMEOUT_MS, referer="https://www.rei.com/")
-    except Exception:
-        # Retry once with a new provider session if configured
-        if _provider_is_configured() and USE_PROVIDER_FOR_PDP:
-            alt = build_provider_url(url, session=random.randint(10_000, 9_999_999))
-            response = await page.goto(alt, wait_until="domcontentloaded", timeout=LOAD_TIMEOUT_MS, referer="https://www.rei.com/")
-        else:
-            raise
+    await goto_with_retries(
+        page,
+        url,
+        use_provider=USE_PROVIDER_FOR_PDP,
+        referer="https://www.rei.com/",
+        max_attempts=3,
+    )
 
     await asyncio.sleep(_rand_sleep(*NAV_SLEEP))
     await _maybe_click_cookies(page)
-
-    # If provider returned a block page or site blocked us, try one more provider session
-    if await _is_access_denied(page) or (response and response.status and response.status in (401, 403)):
-        if _provider_is_configured() and USE_PROVIDER_FOR_PDP:
-            alt = build_provider_url(url, session=random.randint(10_000, 9_999_999))
-            await page.goto(alt, wait_until="domcontentloaded", timeout=LOAD_TIMEOUT_MS, referer="https://www.rei.com/")
-            await asyncio.sleep(_rand_sleep(*NAV_SLEEP))
-        else:
-            # Nothing else to do; we'll parse whatever we can
-            pass
 
     try:
         await page.wait_for_load_state("networkidle", timeout=LOAD_TIMEOUT_MS)
@@ -560,6 +555,7 @@ async def main():
             "ignore_https_errors": True,
             # Extra headers can sometimes help avoid bot screens
             "extra_http_headers": {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Upgrade-Insecure-Requests": "1",
             },
